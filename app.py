@@ -140,30 +140,10 @@ def tat_bucket(days):
 
 
 def table_style(df):
-    def highlight(v):
-        try:
-            v = int(v)
-        except:
-            return ""
-
-        if v > 0:
-            return "background-color:red;color:white;font-weight:bold;text-align:center;"
-        return "text-align:center;"
-
-    styled = df.style.set_table_attributes(
-        'border="1" cellspacing="0" cellpadding="4"'
-    ).set_properties(**{
-        "font-family": "Calibri",
-        "font-size": "13px",
-        "border": "1px solid black",
-        "text-align": "center"
-    })
-
-    for col in ["30 & Above", "15 to 29"]:
-        if col in df.columns:
-            styled = styled.applymap(highlight, subset=[col])
-
-    return styled.to_html()
+    return df.to_html(
+        border=1,
+        justify="center"
+    )
 
 
 def build_report_html(pending_file, location_file):
