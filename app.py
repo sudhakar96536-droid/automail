@@ -16,7 +16,7 @@ SCOPES = [
     "https://www.googleapis.com/auth/gmail.readonly"
 ]
 
-FROM_MAIL = "service.support@zebcare.in"
+FROM_MAIL = "sc6@zebcare.in"
 
 def get_service():
     token_json = os.environ.get("GOOGLE_TOKEN_JSON")
