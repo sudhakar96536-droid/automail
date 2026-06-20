@@ -18,13 +18,20 @@ SCOPES = [
 
 FROM_MAIL = "sc6@zebcare.in"
 
+PENDING_SHEET = "CustomerPending"
+LOCATION_SHEET = "Sheet1"
+LOCATION_FILE = "location123456789.xlsx"
+
+
 def get_service():
     token_json = os.environ.get("GOOGLE_TOKEN_JSON")
     creds = Credentials.from_authorized_user_info(json.loads(token_json), SCOPES)
     return build("gmail", "v1", credentials=creds)
 
+
 def today_text():
     return datetime.now().strftime("%d.%m.%Y")
+
 
 def download_attachment(service, msg_id, filename):
     msg = service.users().messages().get(userId="me", id=msg_id).execute()
@@ -56,6 +63,7 @@ def download_attachment(service, msg_id, filename):
 
     return scan_parts(msg.get("payload", {}).get("parts", []))
 
+
 def find_pending_file(service):
     date_text = today_text()
     subject = f"Pending report {date_text}"
@@ -66,7 +74,7 @@ def find_pending_file(service):
     result = service.users().messages().list(
         userId="me",
         q=query,
-        maxResults=5
+        maxResults=10
     ).execute()
 
     for msg in result.get("messages", []):
@@ -75,6 +83,7 @@ def find_pending_file(service):
             return file_path, subject, filename
 
     return None, subject, filename
+
 
 def find_latest_location_file(service):
     query = f'from:{FROM_MAIL} filename:xlsx location123456789'
@@ -85,14 +94,13 @@ def find_latest_location_file(service):
         maxResults=10
     ).execute()
 
-    filename = "location123456789.xlsx"
-
     for msg in result.get("messages", []):
-        file_path = download_attachment(service, msg["id"], filename)
+        file_path = download_attachment(service, msg["id"], LOCATION_FILE)
         if file_path:
-            return file_path, filename
+            return file_path, LOCATION_FILE
 
-    return None, filename
+    return None, LOCATION_FILE
+
 
 def create_draft(service, subject, html_body):
     html_body = transform(html_body)
@@ -110,48 +118,88 @@ def create_draft(service, subject, html_body):
 
     return draft["id"]
 
-def tat_bucket(x):
+
+def tat_bucket(days):
     try:
-        x = float(x)
+        days = float(days)
     except:
         return "NA"
 
-    if 0 <= x <= 3:
+    if 0 <= days <= 3:
         return "0 to 3"
-    elif 4 <= x <= 6:
+    elif 4 <= days <= 6:
         return "4 to 6"
-    elif 7 <= x <= 10:
+    elif 7 <= days <= 10:
         return "7 to 10"
-    elif 11 <= x <= 14:
+    elif 11 <= days <= 14:
         return "11 to 14"
-    elif 15 <= x <= 29:
+    elif 15 <= days <= 29:
         return "15 to 29"
     else:
         return "30 & Above"
 
+
+def table_style(df):
+    def highlight(v):
+        try:
+            v = int(v)
+        except:
+            return ""
+
+        if v > 0:
+            return "background-color:red;color:white;font-weight:bold;text-align:center;"
+        return "text-align:center;"
+
+    styled = df.style.set_table_attributes(
+        'border="1" cellspacing="0" cellpadding="4"'
+    ).set_properties(**{
+        "font-family": "Calibri",
+        "font-size": "13px",
+        "border": "1px solid black",
+        "text-align": "center"
+    })
+
+    for col in ["30 & Above", "15 to 29"]:
+        if col in df.columns:
+            styled = styled.applymap(highlight, subset=[col])
+
+    return styled.to_html()
+
+
 def build_report_html(pending_file, location_file):
-    df = pd.read_excel(pending_file, sheet_name="CustomerPending")
-    loc = pd.read_excel(location_file, sheet_name="Sheet1")
+    df = pd.read_excel(pending_file, sheet_name=PENDING_SHEET)
+    loc = pd.read_excel(location_file, sheet_name=LOCATION_SHEET)
 
-    # Same as VBA VLOOKUP:
-    # Data D column lookup with Sheet1 B:F, return 5th column
-    # Here expected:
-    # df 4th column = lookup key
-    # loc 2nd column = lookup key
-    # loc 6th column = Zone
-    df_key_col = df.columns[3]
-    loc_key_col = loc.columns[1]
-    loc_zone_col = loc.columns[5]
+    df.columns = df.columns.astype(str).str.strip()
+    loc.columns = loc.columns.astype(str).str.strip()
 
-    loc_map = loc.set_index(loc_key_col)[loc_zone_col].to_dict()
-    df["Zone"] = df[df_key_col].map(loc_map).fillna("NA")
+    # Pending file columns
+    pending_location_col = "Location"
+    pending_days_col = "Pending From No. Of Days"
 
-    if "TAT" not in df.columns:
-        raise Exception("TAT column not found in CustomerPending sheet")
+    # Location master columns
+    loc_code_col = "Loc. Code"
+    loc_zone_col = "Zone"
+    loc_state_col = "State"
 
-    if "State" not in df.columns:
-        raise Exception("State column not found in CustomerPending sheet")
+    for col in [pending_location_col, pending_days_col]:
+        if col not in df.columns:
+            raise Exception(f"Pending sheet column missing: {col}")
 
+    for col in [loc_code_col, loc_zone_col, loc_state_col]:
+        if col not in loc.columns:
+            raise Exception(f"Location sheet column missing: {col}")
+
+    df[pending_location_col] = df[pending_location_col].astype(str).str.strip()
+    loc[loc_code_col] = loc[loc_code_col].astype(str).str.strip()
+
+    zone_map = loc.drop_duplicates(loc_code_col).set_index(loc_code_col)[loc_zone_col].to_dict()
+    state_map = loc.drop_duplicates(loc_code_col).set_index(loc_code_col)[loc_state_col].to_dict()
+
+    df["Zone"] = df[pending_location_col].map(zone_map).fillna("NA")
+    df["State"] = df[pending_location_col].map(state_map).fillna("NA")
+
+    df["TAT"] = pd.to_numeric(df[pending_days_col], errors="coerce").fillna(0)
     df["TATX"] = df["TAT"].apply(tat_bucket)
 
     order_cols = ["30 & Above", "15 to 29", "11 to 14", "7 to 10", "4 to 6", "0 to 3"]
@@ -160,7 +208,7 @@ def build_report_html(pending_file, location_file):
         df,
         index="Zone",
         columns="TATX",
-        values="TAT",
+        values="JOB NO.",
         aggfunc="count",
         fill_value=0,
         margins=True,
@@ -171,7 +219,7 @@ def build_report_html(pending_file, location_file):
         df,
         index="State",
         columns="TATX",
-        values="TAT",
+        values="JOB NO.",
         aggfunc="count",
         fill_value=0,
         margins=True,
@@ -190,8 +238,8 @@ def build_report_html(pending_file, location_file):
         normal = normal.sort_values(by="15 to 29", ascending=False)
         state_pivot = pd.concat([normal, grand])
 
-    zone_html = zone_pivot.to_html(border=1)
-    state_html = state_pivot.to_html(border=1)
+    zone_html = table_style(zone_pivot)
+    state_html = table_style(state_pivot)
 
     return f"""
     <p style='font-family:Calibri;font-size:14px;'>
@@ -213,28 +261,31 @@ def build_report_html(pending_file, location_file):
     </p>
     """
 
+
 @app.route("/")
 def home():
     return "Pending report automation running"
 
+
 @app.route("/check-pending-report")
 def check_pending_report():
-    service = get_service()
+    try:
+        service = get_service()
 
-    pending_file, pending_subject, pending_filename = find_pending_file(service)
+        pending_file, pending_subject, pending_filename = find_pending_file(service)
+        if not pending_file:
+            return f"Pending file not found: {pending_filename}"
 
-    if not pending_file:
-        return f"Pending file not found: {pending_filename}"
+        location_file, location_filename = find_latest_location_file(service)
+        if not location_file:
+            return f"Location file not found: {location_filename}"
 
-    location_file, location_filename = find_latest_location_file(service)
+        html_body = build_report_html(pending_file, location_file)
 
-    if not location_file:
-        return f"Location file not found: {location_filename}"
+        draft_subject = "Current Jobs Pending List Report as on - " + datetime.now().strftime("%d-%b-%Y")
+        draft_id = create_draft(service, draft_subject, html_body)
 
-    html_body = build_report_html(pending_file, location_file)
+        return f"Done. Draft created: {draft_id}"
 
-    draft_subject = "Current Jobs Pending List Report as on - " + datetime.now().strftime("%d-%b-%Y")
-
-    draft_id = create_draft(service, draft_subject, html_body)
-
-    return f"Done. Pending + Location processed. Draft created: {draft_id}"
+    except Exception as e:
+        return f"ERROR: {str(e)}", 500
