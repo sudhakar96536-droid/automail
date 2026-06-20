@@ -153,6 +153,38 @@ def build_report_html(pending_file, location_file):
     df.columns = df.columns.astype(str).str.strip()
     loc.columns = loc.columns.astype(str).str.strip()
 
+    # Remove leading/trailing spaces from all text columns
+    df = df.apply(
+        lambda col: col.str.strip() if col.dtype == "object" else col
+    )
+    
+    # Remove rows containing "Total Jobs"
+    df = df[
+        ~df.astype(str)
+          .apply(
+              lambda row: row.str.contains(
+                  "Total Jobs",
+                  case=False,
+                  na=False
+              )
+          )
+          .any(axis=1)
+    ]
+    
+    # Remove completely blank rows
+    df = df.dropna(how="all")
+
+
+    
+
+
+
+
+
+    
+    df.columns = df.columns.astype(str).str.strip()
+    loc.columns = loc.columns.astype(str).str.strip()
+
     # Pending file columns
     pending_location_col = "Location"
     pending_days_col = "Pending From No. Of Days"
