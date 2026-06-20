@@ -140,10 +140,30 @@ def tat_bucket(days):
 
 
 def table_style(df):
-    return df.to_html(
-        border=1,
-        justify="center"
-    )
+    def highlight(v):
+        try:
+            v = int(v)
+        except:
+            return ""
+
+        if v > 0:
+            return "background-color:red;color:white;font-weight:bold;text-align:center;"
+        return "text-align:center;"
+
+    styled = df.style.set_table_attributes(
+        'border="1" cellspacing="0" cellpadding="4"'
+    ).set_properties(**{
+        "font-family": "Calibri",
+        "font-size": "13px",
+        "border": "1px solid black",
+        "text-align": "center"
+    })
+
+    for col in ["30 & Above", "15 to 29"]:
+        if col in df.columns:
+            styled = styled.map(highlight, subset=[col])
+
+    return styled.to_html()
 
 
 def build_report_html(pending_file, location_file):
@@ -153,62 +173,42 @@ def build_report_html(pending_file, location_file):
     df.columns = df.columns.astype(str).str.strip()
     loc.columns = loc.columns.astype(str).str.strip()
 
-    # Remove leading/trailing spaces from all text columns
-    df = df.apply(
-        lambda col: col.str.strip() if col.dtype == "object" else col
-    )
-    
-    # Remove rows containing "Total Jobs"
+    df = df.apply(lambda col: col.str.strip() if col.dtype == "object" else col)
+    loc = loc.apply(lambda col: col.str.strip() if col.dtype == "object" else col)
+
     df = df[
         ~df.astype(str)
-          .apply(
-              lambda row: row.str.contains(
-                  "Total Jobs",
-                  case=False,
-                  na=False
-              )
-          )
-          .any(axis=1)
+        .apply(lambda row: row.str.contains("Total Jobs", case=False, na=False))
+        .any(axis=1)
     ]
-    
-    # Remove completely blank rows
+
     df = df.dropna(how="all")
 
-
-    
-
-
-
-
-
-    
-    df.columns = df.columns.astype(str).str.strip()
-    loc.columns = loc.columns.astype(str).str.strip()
-
-    # Pending file columns
     pending_location_col = "Location"
     pending_days_col = "Pending From No. Of Days"
+    pending_zone_col = "Zone"
 
-    # Location master columns
     loc_code_col = "Loc. Code"
-    loc_zone_col = "Zone"
     loc_state_col = "State"
 
-    for col in [pending_location_col, pending_days_col]:
+    for col in [pending_location_col, pending_days_col, pending_zone_col, "JOB NO."]:
         if col not in df.columns:
             raise Exception(f"Pending sheet column missing: {col}")
 
-    for col in [loc_code_col, loc_zone_col, loc_state_col]:
+    for col in [loc_code_col, loc_state_col]:
         if col not in loc.columns:
             raise Exception(f"Location sheet column missing: {col}")
 
     df[pending_location_col] = df[pending_location_col].astype(str).str.strip()
     loc[loc_code_col] = loc[loc_code_col].astype(str).str.strip()
 
-    zone_map = loc.drop_duplicates(loc_code_col).set_index(loc_code_col)[loc_zone_col].to_dict()
-    state_map = loc.drop_duplicates(loc_code_col).set_index(loc_code_col)[loc_state_col].to_dict()
+    state_map = (
+        loc.drop_duplicates(loc_code_col)
+        .set_index(loc_code_col)[loc_state_col]
+        .to_dict()
+    )
 
-    df["Zone"] = df[pending_location_col].map(zone_map).fillna("NA")
+    df["Zone"] = df[pending_zone_col].astype(str).str.strip()
     df["State"] = df[pending_location_col].map(state_map).fillna("NA")
 
     df["TAT"] = pd.to_numeric(df[pending_days_col], errors="coerce").fillna(0)
