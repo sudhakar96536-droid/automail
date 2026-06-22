@@ -15,10 +15,12 @@ app = Flask(__name__)
 
 SCOPES = [
     "https://www.googleapis.com/auth/gmail.compose",
-    "https://www.googleapis.com/auth/gmail.readonly"
+    "https://www.googleapis.com/auth/gmail.readonly",
+    "https://www.googleapis.com/auth/gmail.modify"
 ]
 
 FROM_MAIL = "sc6@zebcare.in"
+PROCESSED_LABEL_NAME = "AUTO_PROCESSED"
 
 PENDING_SHEET = "CustomerPending"
 LOCATION_SHEET = "Sheet1"
@@ -51,11 +53,37 @@ def clean_text_series(s):
     )
 
 
-def download_attachment(service, msg_id, filename):
-    msg = service.users().messages().get(
+def get_or_create_label_id(service, label_name):
+    labels = service.users().labels().list(userId="me").execute().get("labels", [])
+
+    for label in labels:
+        if label["name"] == label_name:
+            return label["id"]
+
+    created = service.users().labels().create(
         userId="me",
-        id=msg_id
+        body={
+            "name": label_name,
+            "labelListVisibility": "labelShow",
+            "messageListVisibility": "show"
+        }
     ).execute()
+
+    return created["id"]
+
+
+def mark_message_processed(service, msg_id):
+    label_id = get_or_create_label_id(service, PROCESSED_LABEL_NAME)
+
+    service.users().messages().modify(
+        userId="me",
+        id=msg_id,
+        body={"addLabelIds": [label_id]}
+    ).execute()
+
+
+def download_attachment(service, msg_id, filename):
+    msg = service.users().messages().get(userId="me", id=msg_id).execute()
 
     def scan_parts(parts):
         for part in parts:
@@ -88,11 +116,10 @@ def download_attachment(service, msg_id, filename):
 
 def find_pending_file(service):
     date_text = today_text()
-
     subject = f"Pending report {date_text}"
     filename = f"Pending report {date_text}.xlsx"
 
-    query = f'from:{FROM_MAIL} subject:"{subject}" has:attachment'
+    query = f'from:{FROM_MAIL} subject:"{subject}" has:attachment -label:{PROCESSED_LABEL_NAME}'
 
     result = service.users().messages().list(
         userId="me",
@@ -103,13 +130,13 @@ def find_pending_file(service):
     for msg in result.get("messages", []):
         file_path = download_attachment(service, msg["id"], filename)
         if file_path:
-            return file_path, subject, filename
+            return file_path, subject, filename, msg["id"]
 
-    return None, subject, filename
+    return None, subject, filename, None
 
 
 def find_latest_location_file(service):
-    query = f'from:{FROM_MAIL} filename:xlsx location123456789'
+    query = 'filename:xlsx location123456789'
 
     result = service.users().messages().list(
         userId="me",
@@ -123,30 +150,6 @@ def find_latest_location_file(service):
             return file_path, LOCATION_FILE
 
     return None, LOCATION_FILE
-
-
-def draft_exists_today(service):
-    subject = "Current Jobs Pending List Report as on - " + today_subject_date()
-
-    drafts = service.users().drafts().list(
-        userId="me",
-        maxResults=50
-    ).execute()
-
-    for d in drafts.get("drafts", []):
-        draft = service.users().drafts().get(
-            userId="me",
-            id=d["id"]
-        ).execute()
-
-        headers = draft["message"]["payload"].get("headers", [])
-
-        for h in headers:
-            if h.get("name", "").lower() == "subject":
-                if h.get("value", "").strip() == subject:
-                    return True
-
-    return False
 
 
 def create_draft(service, subject, html_body, attachment_file=None):
@@ -210,12 +213,7 @@ def tat_bucket(days):
 
 def table_style(df):
     html = """
-    <table style="
-        border-collapse:collapse;
-        font-family:Calibri;
-        font-size:13px;
-        table-layout:fixed;
-    ">
+    <table style="border-collapse:collapse;font-family:Calibri;font-size:13px;table-layout:fixed;">
     """
 
     html += "<thead><tr>"
@@ -224,17 +222,7 @@ def table_style(df):
         width = "27ch" if i == 0 else "10.43ch"
 
         html += f"""
-        <th style="
-            border:1px solid #A6A6A6;
-            background-color:#4F81BD;
-            color:white;
-            font-weight:bold;
-            text-align:center;
-            padding:4px;
-            width:{width};
-            min-width:{width};
-            max-width:{width};
-        ">{col}</th>
+        <th style="border:1px solid #A6A6A6;background-color:#4F81BD;color:white;font-weight:bold;text-align:center;padding:4px;width:{width};min-width:{width};max-width:{width};">{col}</th>
         """
 
     html += "</tr></thead><tbody>"
@@ -249,25 +237,13 @@ def table_style(df):
             col_name = df.columns[i]
             width = "27ch" if i == 0 else "10.43ch"
 
-            style = f"""
-                border:1px solid #A6A6A6;
-                padding:4px;
-                width:{width};
-                min-width:{width};
-                max-width:{width};
-                text-align:center;
-                vertical-align:middle;
-            """
+            style = f"border:1px solid #A6A6A6;padding:4px;width:{width};min-width:{width};max-width:{width};text-align:center;vertical-align:middle;"
 
             if i == 0:
                 style += "text-align:left;font-weight:bold;"
 
             if is_grand_total:
-                style += """
-                    background-color:#4F81BD;
-                    color:white;
-                    font-weight:bold;
-                """
+                style += "background-color:#4F81BD;color:white;font-weight:bold;"
 
             if col_name in ["15 to 29", "30 & Above"] and not is_grand_total:
                 try:
@@ -276,16 +252,9 @@ def table_style(df):
                     num = 0
 
                 if num > 0:
-                    style += """
-                        background-color:red;
-                        color:white;
-                        font-weight:bold;
-                    """
+                    style += "background-color:red;color:white;font-weight:bold;"
 
-            if pd.isna(value) or value == 0:
-                display_value = ""
-            else:
-                display_value = value
+            display_value = "" if pd.isna(value) or value == 0 else value
 
             html += f"<td style='{style}'>{display_value}</td>"
 
@@ -297,12 +266,7 @@ def table_style(df):
 
 def simple_table_style(df):
     html = """
-    <table style="
-        border-collapse:collapse;
-        font-family:Calibri;
-        font-size:13px;
-        table-layout:fixed;
-    ">
+    <table style="border-collapse:collapse;font-family:Calibri;font-size:13px;table-layout:fixed;">
     """
 
     html += "<thead><tr>"
@@ -311,17 +275,7 @@ def simple_table_style(df):
         width = "27ch" if i == 0 else "14ch"
 
         html += f"""
-        <th style="
-            border:1px solid #A6A6A6;
-            background-color:#4F81BD;
-            color:white;
-            font-weight:bold;
-            text-align:center;
-            padding:4px;
-            width:{width};
-            min-width:{width};
-            max-width:{width};
-        ">{col}</th>
+        <th style="border:1px solid #A6A6A6;background-color:#4F81BD;color:white;font-weight:bold;text-align:center;padding:4px;width:{width};min-width:{width};max-width:{width};">{col}</th>
         """
 
     html += "</tr></thead><tbody>"
@@ -335,30 +289,15 @@ def simple_table_style(df):
         for i, value in enumerate(row):
             width = "27ch" if i == 0 else "14ch"
 
-            style = f"""
-                border:1px solid #A6A6A6;
-                padding:4px;
-                width:{width};
-                min-width:{width};
-                max-width:{width};
-                text-align:center;
-                vertical-align:middle;
-            """
+            style = f"border:1px solid #A6A6A6;padding:4px;width:{width};min-width:{width};max-width:{width};text-align:center;vertical-align:middle;"
 
             if i == 0:
                 style += "text-align:left;font-weight:bold;"
 
             if is_grand_total:
-                style += """
-                    background-color:#4F81BD;
-                    color:white;
-                    font-weight:bold;
-                """
+                style += "background-color:#4F81BD;color:white;font-weight:bold;"
 
-            if pd.isna(value) or value == 0:
-                display_value = ""
-            else:
-                display_value = value
+            display_value = "" if pd.isna(value) or value == 0 else value
 
             html += f"<td style='{style}'>{display_value}</td>"
 
@@ -495,9 +434,7 @@ def build_pivot_html_from_dataframe(df, loc, intro_text):
     """
 
 
-def build_current_report_html(pending_file, location_file):
-    df, loc = load_clean_files(pending_file, location_file)
-
+def build_current_report_html(df, loc):
     return build_pivot_html_from_dataframe(
         df,
         loc,
@@ -505,9 +442,7 @@ def build_current_report_html(pending_file, location_file):
     )
 
 
-def build_onsite_report_html(pending_file, location_file):
-    df, loc = load_clean_files(pending_file, location_file)
-
+def build_onsite_report_html(df, loc):
     onsite_col = "Onsite Job(Y/N)"
 
     if onsite_col not in df.columns:
@@ -532,9 +467,7 @@ def build_onsite_report_html(pending_file, location_file):
     )
 
 
-def build_closure_pending_report(pending_file, location_file):
-    df, loc = load_clean_files(pending_file, location_file)
-
+def build_closure_pending_report(df):
     status_col = "Status"
 
     if status_col not in df.columns:
@@ -560,14 +493,9 @@ def build_closure_pending_report(pending_file, location_file):
         """
         return html, None
 
-    if "Zone" not in df.columns:
-        raise Exception("Zone column missing for Closure Pending report")
-
-    if "Location" not in df.columns:
-        raise Exception("Location column missing for Closure Pending report")
-
-    if "JOB NO." not in df.columns:
-        raise Exception("JOB NO. column missing for Closure Pending report")
+    for col in ["Zone", "Location", "JOB NO."]:
+        if col not in df.columns:
+            raise Exception(f"{col} column missing for Closure Pending report")
 
     zone_pivot = pd.pivot_table(
         df,
@@ -622,20 +550,8 @@ def build_closure_pending_report(pending_file, location_file):
 
     with pd.ExcelWriter(attachment_path, engine="openpyxl") as writer:
         df.to_excel(writer, sheet_name="Closure Pending", index=False)
-
-        zone_pivot.to_excel(
-            writer,
-            sheet_name="Pivot Closure Pending",
-            index=False,
-            startrow=2
-        )
-
-        location_pivot.to_excel(
-            writer,
-            sheet_name="Pivot Closure Pending",
-            index=False,
-            startrow=12
-        )
+        zone_pivot.to_excel(writer, sheet_name="Pivot Closure Pending", index=False, startrow=2)
+        location_pivot.to_excel(writer, sheet_name="Pivot Closure Pending", index=False, startrow=12)
 
     return html, attachment_path
 
@@ -649,46 +565,38 @@ def home():
 def check_pending_report():
     try:
         service = get_service()
-        
-        if draft_exists_today(service):
-            return "Today's drafts already created. Skipped."
 
-        pending_file, pending_subject, pending_filename = find_pending_file(service)
+        pending_file, pending_subject, pending_filename, pending_msg_id = find_pending_file(service)
 
         if not pending_file:
-            return f"Pending file not found: {pending_filename}"
+            return f"No unprocessed Pending file found: {pending_filename}"
 
         location_file, location_filename = find_latest_location_file(service)
 
         if not location_file:
             return f"Location file not found: {location_filename}"
 
-        current_html = build_current_report_html(pending_file, location_file)
+        df, loc = load_clean_files(pending_file, location_file)
+
+        current_html = build_current_report_html(df, loc)
         current_subject = "Current Jobs Pending List Report as on - " + today_subject_date()
         current_draft_id = create_draft(service, current_subject, current_html)
 
-        onsite_html = build_onsite_report_html(pending_file, location_file)
+        onsite_html = build_onsite_report_html(df, loc)
         onsite_subject = "Onsite Jobs Pending Report as on - " + today_subject_date()
         onsite_draft_id = create_draft(service, onsite_subject, onsite_html)
 
-        closure_html, closure_attachment = build_closure_pending_report(
-            pending_file,
-            location_file
-        )
-
+        closure_html, closure_attachment = build_closure_pending_report(df)
         closure_subject = "Closure Pending Report - " + today_subject_date()
+        closure_draft_id = create_draft(service, closure_subject, closure_html, closure_attachment)
 
-        closure_draft_id = create_draft(
-            service,
-            closure_subject,
-            closure_html,
-            closure_attachment
-        )
+        mark_message_processed(service, pending_msg_id)
 
         return (
             f"Done. Current Draft: {current_draft_id} | "
             f"Onsite Draft: {onsite_draft_id} | "
-            f"Closure Draft: {closure_draft_id}"
+            f"Closure Draft: {closure_draft_id} | "
+            f"Source mail marked {PROCESSED_LABEL_NAME}"
         )
 
     except Exception as e:
