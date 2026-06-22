@@ -125,6 +125,30 @@ def find_latest_location_file(service):
     return None, LOCATION_FILE
 
 
+def draft_exists_today(service):
+    subject = "Current Jobs Pending List Report as on - " + today_subject_date()
+
+    drafts = service.users().drafts().list(
+        userId="me",
+        maxResults=50
+    ).execute()
+
+    for d in drafts.get("drafts", []):
+        draft = service.users().drafts().get(
+            userId="me",
+            id=d["id"]
+        ).execute()
+
+        headers = draft["message"]["payload"].get("headers", [])
+
+        for h in headers:
+            if h.get("name", "").lower() == "subject":
+                if h.get("value", "").strip() == subject:
+                    return True
+
+    return False
+
+
 def create_draft(service, subject, html_body, attachment_file=None):
     html_body = transform(html_body)
 
@@ -625,6 +649,9 @@ def home():
 def check_pending_report():
     try:
         service = get_service()
+        
+        if draft_exists_today(service):
+            return "Today's drafts already created. Skipped."
 
         pending_file, pending_subject, pending_filename = find_pending_file(service)
 
