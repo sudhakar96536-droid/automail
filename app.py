@@ -149,30 +149,95 @@ def tat_bucket(days):
 
 
 def table_style(df):
-    def highlight(v):
-        try:
-            v = int(v)
-        except:
-            return ""
+    html = """
+    <table style="
+        border-collapse:collapse;
+        font-family:Calibri;
+        font-size:13px;
+        table-layout:fixed;
+    ">
+    """
 
-        if v > 0:
-            return "background-color:red;color:white;font-weight:bold;text-align:center;"
-        return "text-align:center;"
+    # Header row
+    html += "<thead><tr>"
 
-    styled = df.style.set_table_attributes(
-        'border="1" cellspacing="0" cellpadding="4"'
-    ).set_properties(**{
-        "font-family": "Calibri",
-        "font-size": "13px",
-        "border": "1px solid black",
-        "text-align": "center"
-    })
+    for i, col in enumerate(df.columns):
+        width = "27ch" if i == 0 else "10.43ch"
 
-    for col in ["30 & Above", "15 to 29"]:
-        if col in df.columns:
-            styled = styled.map(highlight, subset=[col])
+        html += f"""
+        <th style="
+            border:1px solid #A6A6A6;
+            background-color:#4F81BD;
+            color:white;
+            font-weight:bold;
+            text-align:center;
+            padding:4px;
+            width:{width};
+            min-width:{width};
+            max-width:{width};
+        ">{col}</th>
+        """
 
-    return styled.hide(axis="index").to_html()
+    html += "</tr></thead><tbody>"
+
+    # Data rows
+    for _, row in df.iterrows():
+        first_value = str(row.iloc[0]).strip()
+        is_grand_total = first_value.lower() == "grand total"
+
+        html += "<tr>"
+
+        for i, value in enumerate(row):
+            col_name = df.columns[i]
+            width = "27ch" if i == 0 else "10.43ch"
+
+            style = f"""
+                border:1px solid #A6A6A6;
+                padding:4px;
+                width:{width};
+                min-width:{width};
+                max-width:{width};
+                text-align:center;
+                vertical-align:middle;
+            """
+
+            if i == 0:
+                style += "text-align:left;font-weight:bold;"
+
+            # Grand Total row same pivot style as header
+            if is_grand_total:
+                style += """
+                    background-color:#4F81BD;
+                    color:white;
+                    font-weight:bold;
+                """
+
+            # Highlight only risk columns if value > 0, except Grand Total row
+            if col_name in ["15 to 29", "30 & Above"] and not is_grand_total:
+                try:
+                    num = int(value)
+                except:
+                    num = 0
+
+                if num > 0:
+                    style += """
+                        background-color:red;
+                        color:white;
+                        font-weight:bold;
+                    """
+
+            if pd.isna(value) or value == 0:
+                display_value = ""
+            else:
+                display_value = value
+
+            html += f"<td style='{style}'>{display_value}</td>"
+
+        html += "</tr>"
+
+    html += "</tbody></table>"
+
+    return html
 
 
 def build_report_html(pending_file, location_file):
