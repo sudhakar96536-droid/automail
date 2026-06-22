@@ -163,7 +163,7 @@ def table_style(df):
         if col in df.columns:
             styled = styled.map(highlight, subset=[col])
 
-    return styled.to_html()
+    return styled.to_html(index=False)
 
 
 def build_report_html(pending_file, location_file):
@@ -249,6 +249,15 @@ def build_report_html(pending_file, location_file):
         normal = state_pivot.drop(index="Grand Total", errors="ignore")
         normal = normal.sort_values(by="15 to 29", ascending=False)
         state_pivot = pd.concat([normal, grand])
+
+    zone_pivot.columns.name = None
+    state_pivot.columns.name = None
+
+    zone_pivot.index.name = "Zone"
+    state_pivot.index.name = "State"
+
+    zone_pivot = zone_pivot.reset_index()
+    state_pivot = state_pivot.reset_index()
 
     zone_html = table_style(zone_pivot)
     state_html = table_style(state_pivot)
