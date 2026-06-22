@@ -158,7 +158,6 @@ def table_style(df):
     ">
     """
 
-    # Header row
     html += "<thead><tr>"
 
     for i, col in enumerate(df.columns):
@@ -180,7 +179,6 @@ def table_style(df):
 
     html += "</tr></thead><tbody>"
 
-    # Data rows
     for _, row in df.iterrows():
         first_value = str(row.iloc[0]).strip()
         is_grand_total = first_value.lower() == "grand total"
@@ -204,7 +202,6 @@ def table_style(df):
             if i == 0:
                 style += "text-align:left;font-weight:bold;"
 
-            # Grand Total row same pivot style as header
             if is_grand_total:
                 style += """
                     background-color:#4F81BD;
@@ -212,7 +209,6 @@ def table_style(df):
                     font-weight:bold;
                 """
 
-            # Highlight only risk columns if value > 0, except Grand Total row
             if col_name in ["15 to 29", "30 & Above"] and not is_grand_total:
                 try:
                     num = int(value)
@@ -240,7 +236,7 @@ def table_style(df):
     return html
 
 
-def build_report_html(pending_file, location_file):
+def load_clean_files(pending_file, location_file):
     df = pd.read_excel(pending_file, sheet_name=PENDING_SHEET)
     loc = pd.read_excel(location_file, sheet_name=LOCATION_SHEET)
 
@@ -258,6 +254,10 @@ def build_report_html(pending_file, location_file):
 
     df = df.dropna(how="all")
 
+    return df, loc
+
+
+def build_pivot_html_from_dataframe(df, loc, intro_text):
     pending_location_col = "Location"
     pending_days_col = "Pending From No. Of Days"
     pending_zone_col = "Zone"
@@ -273,6 +273,9 @@ def build_report_html(pending_file, location_file):
         if col not in loc.columns:
             raise Exception(f"Location sheet column missing: {col}")
 
+    df = df.copy()
+    loc = loc.copy()
+
     df["_location_key"] = clean_text_series(df[pending_location_col])
     loc["_branch_key"] = clean_text_series(loc[loc_branch_col])
 
@@ -282,7 +285,13 @@ def build_report_html(pending_file, location_file):
         .to_dict()
     )
 
-    df["Zone"] = df[pending_zone_col].astype(str).str.replace("\u00a0", " ", regex=False).str.strip()
+    df["Zone"] = (
+        df[pending_zone_col]
+        .astype(str)
+        .str.replace("\u00a0", " ", regex=False)
+        .str.strip()
+    )
+
     df["State"] = df["_location_key"].map(state_map).fillna("NA")
 
     df["TAT"] = pd.to_numeric(df[pending_days_col], errors="coerce").fillna(0)
@@ -339,7 +348,7 @@ def build_report_html(pending_file, location_file):
     return f"""
     <p style='font-family:Calibri;font-size:14px;'>
     Hi Team,<br><br>
-    Please find the Zone and State Current Jobs Pending List Report:
+    {intro_text}
     </p>
 
     <p style='font-family:Calibri;font-size:14px;font-weight:bold;'>Zone Summary:</p>
@@ -355,6 +364,43 @@ def build_report_html(pending_file, location_file):
     Service Department
     </p>
     """
+
+
+def build_current_report_html(pending_file, location_file):
+    df, loc = load_clean_files(pending_file, location_file)
+
+    return build_pivot_html_from_dataframe(
+        df,
+        loc,
+        "Please find the Zone and State Current Jobs Pending List Report:"
+    )
+
+
+def build_onsite_report_html(pending_file, location_file):
+    df, loc = load_clean_files(pending_file, location_file)
+
+    onsite_col = "Onsite Job(Y/N)"
+
+    if onsite_col not in df.columns:
+        raise Exception(f"Pending sheet column missing: {onsite_col}")
+
+    df = df[df[onsite_col].astype(str).str.strip().str.upper() == "Y"]
+
+    if df.empty:
+        return """
+        <p style='font-family:Calibri;font-size:14px;'>
+        Hi Team,<br><br>
+        No Onsite Pending Jobs found today.<br><br>
+        Regards,<br>
+        Service Department
+        </p>
+        """
+
+    return build_pivot_html_from_dataframe(
+        df,
+        loc,
+        "Please find the Zone and State Onsite Jobs Pending Report:"
+    )
 
 
 @app.route("/")
@@ -375,12 +421,15 @@ def check_pending_report():
         if not location_file:
             return f"Location file not found: {location_filename}"
 
-        html_body = build_report_html(pending_file, location_file)
+        current_html = build_current_report_html(pending_file, location_file)
+        current_subject = "Current Jobs Pending List Report as on - " + datetime.now().strftime("%d-%b-%Y")
+        current_draft_id = create_draft(service, current_subject, current_html)
 
-        draft_subject = "Current Jobs Pending List Report as on - " + datetime.now().strftime("%d-%b-%Y")
-        draft_id = create_draft(service, draft_subject, html_body)
+        onsite_html = build_onsite_report_html(pending_file, location_file)
+        onsite_subject = "Onsite Jobs Pending Report as on - " + datetime.now().strftime("%d-%b-%Y")
+        onsite_draft_id = create_draft(service, onsite_subject, onsite_html)
 
-        return f"Done. Draft created: {draft_id}"
+        return f"Done. Current Draft: {current_draft_id} | Onsite Draft: {onsite_draft_id}"
 
     except Exception as e:
         return f"ERROR: {str(e)}", 500
