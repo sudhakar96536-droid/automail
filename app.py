@@ -33,6 +33,15 @@ def today_text():
     return datetime.now().strftime("%d.%m.%Y")
 
 
+def clean_text_series(s):
+    return (
+        s.astype(str)
+        .str.replace("\u00a0", " ", regex=False)
+        .str.strip()
+        .str.upper()
+    )
+
+
 def download_attachment(service, msg_id, filename):
     msg = service.users().messages().get(userId="me", id=msg_id).execute()
 
@@ -188,28 +197,28 @@ def build_report_html(pending_file, location_file):
     pending_days_col = "Pending From No. Of Days"
     pending_zone_col = "Zone"
 
-    loc_code_col = "Loc. Code"
+    loc_branch_col = "BRANCH"
     loc_state_col = "State"
 
     for col in [pending_location_col, pending_days_col, pending_zone_col, "JOB NO."]:
         if col not in df.columns:
             raise Exception(f"Pending sheet column missing: {col}")
 
-    for col in [loc_code_col, loc_state_col]:
+    for col in [loc_branch_col, loc_state_col]:
         if col not in loc.columns:
             raise Exception(f"Location sheet column missing: {col}")
 
-    df[pending_location_col] = df[pending_location_col].astype(str).str.strip()
-    loc[loc_code_col] = loc[loc_code_col].astype(str).str.strip()
+    df["_location_key"] = clean_text_series(df[pending_location_col])
+    loc["_branch_key"] = clean_text_series(loc[loc_branch_col])
 
     state_map = (
-        loc.drop_duplicates(loc_code_col)
-        .set_index(loc_code_col)[loc_state_col]
+        loc.drop_duplicates("_branch_key")
+        .set_index("_branch_key")[loc_state_col]
         .to_dict()
     )
 
-    df["Zone"] = df[pending_zone_col].astype(str).str.strip()
-    df["State"] = df[pending_location_col].map(state_map).fillna("NA")
+    df["Zone"] = df[pending_zone_col].astype(str).str.replace("\u00a0", " ", regex=False).str.strip()
+    df["State"] = df["_location_key"].map(state_map).fillna("NA")
 
     df["TAT"] = pd.to_numeric(df[pending_days_col], errors="coerce").fillna(0)
     df["TATX"] = df["TAT"].apply(tat_bucket)
