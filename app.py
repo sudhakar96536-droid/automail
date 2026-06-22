@@ -1,8 +1,10 @@
-import os, json, base64, tempfile
+import os, json, base64, tempfile, mimetypes
 from datetime import datetime
 from flask import Flask
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+from email.mime.base import MIMEBase
+from email import encoders
 from premailer import transform
 import pandas as pd
 
@@ -25,12 +27,19 @@ LOCATION_FILE = "location123456789.xlsx"
 
 def get_service():
     token_json = os.environ.get("GOOGLE_TOKEN_JSON")
+    if not token_json:
+        raise Exception("GOOGLE_TOKEN_JSON missing in Render Environment")
+
     creds = Credentials.from_authorized_user_info(json.loads(token_json), SCOPES)
     return build("gmail", "v1", credentials=creds)
 
 
 def today_text():
     return datetime.now().strftime("%d.%m.%Y")
+
+
+def today_subject_date():
+    return datetime.now().strftime("%d-%b-%Y")
 
 
 def clean_text_series(s):
@@ -43,12 +52,16 @@ def clean_text_series(s):
 
 
 def download_attachment(service, msg_id, filename):
-    msg = service.users().messages().get(userId="me", id=msg_id).execute()
+    msg = service.users().messages().get(
+        userId="me",
+        id=msg_id
+    ).execute()
 
     def scan_parts(parts):
         for part in parts:
             if part.get("filename") == filename:
                 att_id = part["body"]["attachmentId"]
+
                 att = service.users().messages().attachments().get(
                     userId="me",
                     messageId=msg_id,
@@ -75,6 +88,7 @@ def download_attachment(service, msg_id, filename):
 
 def find_pending_file(service):
     date_text = today_text()
+
     subject = f"Pending report {date_text}"
     filename = f"Pending report {date_text}.xlsx"
 
@@ -111,12 +125,34 @@ def find_latest_location_file(service):
     return None, LOCATION_FILE
 
 
-def create_draft(service, subject, html_body):
+def create_draft(service, subject, html_body, attachment_file=None):
     html_body = transform(html_body)
 
     message = MIMEMultipart()
     message["Subject"] = subject
     message.attach(MIMEText(html_body, "html", "utf-8"))
+
+    if attachment_file and os.path.exists(attachment_file):
+        ctype, encoding = mimetypes.guess_type(attachment_file)
+
+        if ctype is None or encoding is not None:
+            ctype = "application/octet-stream"
+
+        maintype, subtype = ctype.split("/", 1)
+
+        with open(attachment_file, "rb") as f:
+            part = MIMEBase(maintype, subtype)
+            part.set_payload(f.read())
+
+        encoders.encode_base64(part)
+
+        part.add_header(
+            "Content-Disposition",
+            "attachment",
+            filename=os.path.basename(attachment_file)
+        )
+
+        message.attach(part)
 
     raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
 
@@ -232,7 +268,79 @@ def table_style(df):
         html += "</tr>"
 
     html += "</tbody></table>"
+    return html
 
+
+def simple_table_style(df):
+    html = """
+    <table style="
+        border-collapse:collapse;
+        font-family:Calibri;
+        font-size:13px;
+        table-layout:fixed;
+    ">
+    """
+
+    html += "<thead><tr>"
+
+    for i, col in enumerate(df.columns):
+        width = "27ch" if i == 0 else "14ch"
+
+        html += f"""
+        <th style="
+            border:1px solid #A6A6A6;
+            background-color:#4F81BD;
+            color:white;
+            font-weight:bold;
+            text-align:center;
+            padding:4px;
+            width:{width};
+            min-width:{width};
+            max-width:{width};
+        ">{col}</th>
+        """
+
+    html += "</tr></thead><tbody>"
+
+    for _, row in df.iterrows():
+        first_value = str(row.iloc[0]).strip()
+        is_grand_total = first_value.lower() == "grand total"
+
+        html += "<tr>"
+
+        for i, value in enumerate(row):
+            width = "27ch" if i == 0 else "14ch"
+
+            style = f"""
+                border:1px solid #A6A6A6;
+                padding:4px;
+                width:{width};
+                min-width:{width};
+                max-width:{width};
+                text-align:center;
+                vertical-align:middle;
+            """
+
+            if i == 0:
+                style += "text-align:left;font-weight:bold;"
+
+            if is_grand_total:
+                style += """
+                    background-color:#4F81BD;
+                    color:white;
+                    font-weight:bold;
+                """
+
+            if pd.isna(value) or value == 0:
+                display_value = ""
+            else:
+                display_value = value
+
+            html += f"<td style='{style}'>{display_value}</td>"
+
+        html += "</tr>"
+
+    html += "</tbody></table>"
     return html
 
 
@@ -342,9 +450,6 @@ def build_pivot_html_from_dataframe(df, loc, intro_text):
     zone_pivot = zone_pivot.reset_index()
     state_pivot = state_pivot.reset_index()
 
-    zone_html = table_style(zone_pivot)
-    state_html = table_style(state_pivot)
-
     return f"""
     <p style='font-family:Calibri;font-size:14px;'>
     Hi Team,<br><br>
@@ -352,11 +457,11 @@ def build_pivot_html_from_dataframe(df, loc, intro_text):
     </p>
 
     <p style='font-family:Calibri;font-size:14px;font-weight:bold;'>Zone Summary:</p>
-    {zone_html}
+    {table_style(zone_pivot)}
     <br>
 
     <p style='font-family:Calibri;font-size:14px;font-weight:bold;'>State Summary:</p>
-    {state_html}
+    {table_style(state_pivot)}
     <br>
 
     <p style='font-family:Calibri;font-size:14px;'>
@@ -403,6 +508,114 @@ def build_onsite_report_html(pending_file, location_file):
     )
 
 
+def build_closure_pending_report(pending_file, location_file):
+    df, loc = load_clean_files(pending_file, location_file)
+
+    status_col = "Status"
+
+    if status_col not in df.columns:
+        raise Exception(f"Pending sheet column missing: {status_col}")
+
+    df = df[
+        df[status_col]
+        .astype(str)
+        .str.replace("\u00a0", " ", regex=False)
+        .str.strip()
+        .str.upper()
+        == "CLOSURE PENDING"
+    ]
+
+    if df.empty:
+        html = """
+        <p style='font-family:Calibri;font-size:14px;'>
+        Hi Team,<br><br>
+        No Closure Pending jobs found today.<br><br>
+        Regards,<br>
+        Service Department
+        </p>
+        """
+        return html, None
+
+    if "Zone" not in df.columns:
+        raise Exception("Zone column missing for Closure Pending report")
+
+    if "Location" not in df.columns:
+        raise Exception("Location column missing for Closure Pending report")
+
+    if "JOB NO." not in df.columns:
+        raise Exception("JOB NO. column missing for Closure Pending report")
+
+    zone_pivot = pd.pivot_table(
+        df,
+        index="Zone",
+        values="JOB NO.",
+        aggfunc="count",
+        fill_value=0,
+        margins=True,
+        margins_name="Grand Total"
+    ).reset_index()
+
+    zone_pivot.columns = ["Zone", "Count of JOB NO."]
+
+    location_pivot = pd.pivot_table(
+        df,
+        index="Location",
+        values="JOB NO.",
+        aggfunc="count",
+        fill_value=0,
+        margins=True,
+        margins_name="Grand Total"
+    )
+
+    grand = location_pivot.loc[["Grand Total"]]
+    normal = location_pivot.drop(index="Grand Total", errors="ignore")
+    normal = normal.sort_values(by="JOB NO.", ascending=False)
+    location_pivot = pd.concat([normal, grand]).reset_index()
+    location_pivot.columns = ["Location", "Count of JOB NO."]
+
+    html = f"""
+    <p style='font-family:Calibri;font-size:14px;'>
+    Hi Team,<br><br>
+    Please find the Closure Pending Report:
+    </p>
+
+    <p style='font-family:Calibri;font-size:14px;font-weight:bold;'>Zone Summary:</p>
+    {simple_table_style(zone_pivot)}
+    <br>
+
+    <p style='font-family:Calibri;font-size:14px;font-weight:bold;'>Location Summary:</p>
+    {simple_table_style(location_pivot)}
+    <br>
+
+    <p style='font-family:Calibri;font-size:14px;'>
+    Regards,<br>
+    Service Department
+    </p>
+    """
+
+    attachment_name = "Closure Pending_" + today_subject_date() + ".xlsx"
+    attachment_path = os.path.join(tempfile.gettempdir(), attachment_name)
+
+    with pd.ExcelWriter(attachment_path, engine="openpyxl") as writer:
+        df.to_excel(writer, sheet_name="Closure Pending", index=False)
+
+        zone_pivot.to_excel(
+            writer,
+            sheet_name="Pivot Closure Pending",
+            index=False,
+            startrow=2
+        )
+
+        location_pivot.to_excel(
+            writer,
+            sheet_name="Pivot Closure Pending",
+            index=False,
+            startrow=12
+        )
+
+    return html, attachment_path
+
+
 @app.route("/")
 def home():
     return "Pending report automation running"
@@ -414,22 +627,42 @@ def check_pending_report():
         service = get_service()
 
         pending_file, pending_subject, pending_filename = find_pending_file(service)
+
         if not pending_file:
             return f"Pending file not found: {pending_filename}"
 
         location_file, location_filename = find_latest_location_file(service)
+
         if not location_file:
             return f"Location file not found: {location_filename}"
 
         current_html = build_current_report_html(pending_file, location_file)
-        current_subject = "Current Jobs Pending List Report as on - " + datetime.now().strftime("%d-%b-%Y")
+        current_subject = "Current Jobs Pending List Report as on - " + today_subject_date()
         current_draft_id = create_draft(service, current_subject, current_html)
 
         onsite_html = build_onsite_report_html(pending_file, location_file)
-        onsite_subject = "Onsite Jobs Pending Report as on - " + datetime.now().strftime("%d-%b-%Y")
+        onsite_subject = "Onsite Jobs Pending Report as on - " + today_subject_date()
         onsite_draft_id = create_draft(service, onsite_subject, onsite_html)
 
-        return f"Done. Current Draft: {current_draft_id} | Onsite Draft: {onsite_draft_id}"
+        closure_html, closure_attachment = build_closure_pending_report(
+            pending_file,
+            location_file
+        )
+
+        closure_subject = "Closure Pending Report - " + today_subject_date()
+
+        closure_draft_id = create_draft(
+            service,
+            closure_subject,
+            closure_html,
+            closure_attachment
+        )
+
+        return (
+            f"Done. Current Draft: {current_draft_id} | "
+            f"Onsite Draft: {onsite_draft_id} | "
+            f"Closure Draft: {closure_draft_id}"
+        )
 
     except Exception as e:
         return f"ERROR: {str(e)}", 500
