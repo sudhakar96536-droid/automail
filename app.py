@@ -163,7 +163,7 @@ def table_style(df):
         if col in df.columns:
             styled = styled.map(highlight, subset=[col])
 
-    return styled.to_html(index=False)
+    return styled.hide(axis="index").to_html()
 
 
 def build_report_html(pending_file, location_file):
@@ -214,7 +214,7 @@ def build_report_html(pending_file, location_file):
     df["TAT"] = pd.to_numeric(df[pending_days_col], errors="coerce").fillna(0)
     df["TATX"] = df["TAT"].apply(tat_bucket)
 
-    order_cols = ["30 & Above", "15 to 29", "11 to 14", "7 to 10", "4 to 6", "0 to 3"]
+    order_cols = ["0 to 3", "4 to 6", "7 to 10", "11 to 14", "15 to 29", "30 & Above"]
 
     zone_pivot = pd.pivot_table(
         df,
