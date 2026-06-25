@@ -19,7 +19,7 @@ SCOPES = [
     "https://www.googleapis.com/auth/gmail.modify"
 ]
 
-FROM_MAIL = "sc6@zebcare.in"
+FROM_MAIL = "service.support@zebcare.in"
 PROCESSED_LABEL_NAME = "AUTO_PROCESSED"
 
 PENDING_SHEET = "CustomerPending"
