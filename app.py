@@ -592,12 +592,8 @@ def check_pending_report():
 
         mark_message_processed(service, pending_msg_id)
 
-        return (
-            f"Done. Current Draft: {current_draft_id} | "
-            f"Onsite Draft: {onsite_draft_id} | "
-            f"Closure Draft: {closure_draft_id} | "
-            f"Source mail marked {PROCESSED_LABEL_NAME}"
-        )
+        return "DONE. Drafts created and source mail marked processed."
 
     except Exception as e:
-        return f"ERROR: {str(e)}", 500
+        print("ERROR:", str(e))
+        return "ERROR. Check Render logs.", 500
